@@ -661,7 +661,8 @@ function populateYears(){const sel=document.getElementById('ypSelect');if(!sel)r
 function selectYear(y){switchYear(y);}
 function closeYear(){const p=document.getElementById('yearPick');if(p)p.classList.remove('on');}
 function switchYear(y){y=String(y);if(y===String(YEAR)){populateYears();return;}save();YEAR=y;localStorage.setItem('salestrack_curYear',YEAR);
-  load();build();if(curView==='dash')dashRender();if(curView==='closed')renderClosed();if(curView==='log')renderLog();populateYears();}
+  load();build();if(curView==='dash')dashRender();if(curView==='closed')renderClosed();if(curView==='log')renderLog();populateYears();
+  if(typeof snapNow==='function'){_syncedSnap=snapNow();if(localStorage.getItem('sheetdbUrl'))cloudPull(true).then(()=>{_syncedSnap=snapNow();});}}
 function toggleMore(e){e.stopPropagation();const m=document.getElementById('moreMenu');m.classList.toggle('on');closeYear();}
 function closeMore(){const m=document.getElementById('moreMenu');if(m)m.classList.remove('on');}
 document.addEventListener('click',function(e){const inMore=e.target.closest&&e.target.closest('.menu-wrap');const inYear=e.target.closest&&e.target.closest('.yearpick');if(!inMore)closeMore();if(!inYear)closeYear();});
@@ -979,7 +980,20 @@ document.addEventListener('click',e=>{const el=e.target.closest('[data-act]');if
   else if(act==='picktime'){const inp=el.parentNode.querySelector('.dpick');if(inp){try{inp.showPicker();}catch(err){inp.focus();}}}
   else if(act==='editnote'){openNoteModal(el.dataset.i,el.dataset.pf);}
   else if(act==='delrow'){const nm=state.rows[i].client;if(confirm('ลบแถวนี้?')){state.rows.splice(i,1);logAdd('ลบลูกค้า',nm,'');build();autosave();}}
-  else if(act==='delsec'){const nm=state.rows[i].name;if(confirm('ลบหมวดนี้? (เฉพาะหัวข้อหมวด)')){state.rows.splice(i,1);logAdd('ลบหมวด',null,nm);build();autosave();}}
+  else if(act==='delsec'){const nm=state.rows[i].name;const src=matchSource(nm)||nm;const OTHER='อื่นๆ';
+    if(confirm('ลบหมวด “'+nm+'”? คอลัมน์ SOURCE “'+src+'” จะถูกลบออก\nลูกค้าที่ไม่เหลือ SOURCE จะถูกย้ายไปกลุ่ม “อื่นๆ”')){
+      state.rows.splice(i,1);
+      const si=state.sources.indexOf(src);if(si>=0)state.sources.splice(si,1);
+      const orphans=[];
+      state.rows.forEach(r=>{if(r.type==='client'&&Array.isArray(r.source)){const k=r.source.indexOf(src);if(k>=0)r.source.splice(k,1);if(r.source.length===0)orphans.push(r);}});
+      if(orphans.length){
+        if(!state.sources.includes(OTHER))state.sources.push(OTHER);
+        state.rows=state.rows.filter(r=>orphans.indexOf(r)<0);
+        let oi=state.rows.findIndex(r=>r.type==='section'&&r.name===OTHER);
+        if(oi<0){state.rows.push({type:'section',name:OTHER});oi=state.rows.length-1;}
+        orphans.forEach(r=>{r.source=[OTHER];});
+        state.rows.splice(oi+1,0,...orphans);}
+      logAdd('ลบหมวด + SOURCE',null,nm);build();autosave();}}
   else if(act==='addclient'){const idx=Number(i),sec=state.rows[idx];let j=idx+1;while(j<state.rows.length&&state.rows[j].type==='client')j++;
     const m=matchSource(sec.name);const k=state.collapsed.indexOf(sec.name);if(k>=0)state.collapsed.splice(k,1);
     state.rows.splice(j,0,{type:'client',client:'',contact:'',contactName:'',phone:'',email:'',resp:'',referral:'',contactDate:todayISO(),forecast:'',actual:'',jobStatus:'open',closedDate:'',source:m?[m]:[],service:[],progress:{}});
@@ -1113,9 +1127,11 @@ function fromRows(rows){let cfg=null;const cl=[];
     ns.rows.push({type:'client',client:c.client||'',contactName:c.contactName||'',phone:c.phone||'',email:c.email||'',resp:c.resp||'',referral:c.referral||'',contactDate:c.contactDate||'',jobStatus:c.jobStatus||'open',closedDate:c.closedDate||'',forecast:c.forecast||'',actual:c.actual||'',source:splitList(c.source),service:splitList(c.service),progress:pg});});});
   return ns;}
 function syncIdKey(){return 'sheetSyncId_y'+YEAR;}
+function snapNow(){return JSON.stringify(toRows(''));}
+let _syncedSnap='',_pushing=false,_pulling=false;
 async function cloudSave(silent){const url=getCloudUrl(silent);if(!url)return;
   if(!silent)setCloudStatus('⏳ กำลังบันทึกขึ้น Google Sheet...');
-  const newId='S'+Date.now();
+  const newId='S'+Date.now();const snap=snapNow();_pushing=true;
   try{
     // 1) เขียนข้อมูลชุดใหม่ก่อน (ปลอดภัย: ถ้าล้มเหลว ของเก่ายังอยู่)
     const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({data:toRows(newId)})});
@@ -1123,28 +1139,52 @@ async function cloudSave(silent){const url=getCloudUrl(silent);if(!url)return;
     // 2) เขียนสำเร็จแล้วค่อยลบชุดเก่าของ "ปีนี้" (best-effort)
     const prev=localStorage.getItem(syncIdKey());
     if(prev&&prev!==newId){await fetch(url+'/syncId/'+encodeURIComponent(prev),{method:'DELETE'}).catch(()=>{});}
-    localStorage.setItem(syncIdKey(),newId);
+    localStorage.setItem(syncIdKey(),newId);_syncedSnap=snap;
     const tm=new Date().toLocaleTimeString('th-TH');
     if(silent){const sv=document.getElementById('saved');if(sv)sv.textContent='☁ ซิงค์ขึ้น Sheet '+tm;}
     else setCloudStatus('✓ บันทึกขึ้น Google Sheet แล้ว (ปี '+YEAR+') · '+tm);
-  }catch(e){if(!silent)setCloudStatus('❌ ส่งไม่สำเร็จ (ข้อมูลในเครื่องยังอยู่ครบ): '+e.message);}}
-async function cloudLoad(){const url=getCloudUrl();if(!url)return;
-  if(!confirm('ดึงข้อมูลของปี '+YEAR+' จาก Google Sheet มาแทนที่ข้อมูลในเครื่อง?'))return;
-  setCloudStatus('⏳ กำลังดึงข้อมูล...');
+  }catch(e){if(!silent)setCloudStatus('❌ ส่งไม่สำเร็จ (ข้อมูลในเครื่องยังอยู่ครบ): '+e.message);}
+  finally{_pushing=false;}}
+async function cloudPull(silent){const url=getCloudUrl(silent);if(!url)return false;
+  if(!silent)setCloudStatus('⏳ กำลังดึงข้อมูล...');_pulling=true;
   try{const r=await fetch(url);if(!r.ok)throw new Error('HTTP '+r.status);let all=await r.json();if(!Array.isArray(all))all=[];
     let rows=all.filter(x=>String(x.year||'')===String(YEAR));
     if(!rows.length)rows=all.filter(x=>!String(x.year||'').trim()); // เผื่อข้อมูลเก่าที่ยังไม่มีคอลัมน์ปี
-    if(!rows.length){setCloudStatus('⚠ ยังไม่มีข้อมูลของปี '+YEAR+' ใน Sheet (กด “บันทึกขึ้น Sheet” ก่อน)');return;}
-    // ถ้ามีหลายชุด (กรณีลบชุดเก่าไม่สำเร็จ) ใช้ชุดล่าสุด (syncId มากสุด)
+    if(!rows.length){if(!silent)setCloudStatus('⚠ ยังไม่มีข้อมูลของปี '+YEAR+' ใน Sheet (กด “บันทึกขึ้น Sheet” ก่อน)');return false;}
     const ids=rows.map(x=>String(x.syncId||'')).filter(Boolean);
     if(ids.length){const maxId=ids.sort().slice(-1)[0];rows=rows.filter(x=>String(x.syncId||'')===maxId);}
     const keepLog=(state&&Array.isArray(state.log))?state.log:[];
-    state=fromRows(rows);norm(state);state.log=keepLog;
+    const incoming=fromRows(rows);norm(incoming);incoming.log=keepLog;
+    const newSnap=JSON.stringify((function(){const _s=state;state=incoming;const s=snapNow();state=_s;return JSON.parse(s);})());
+    // ถ้าข้อมูลเหมือนเดิม ไม่ต้อง re-render (กันจอกระพริบ/เสียโฟกัส)
+    if(newSnap===_syncedSnap&&silent){_pulling=false;return false;}
+    state=incoming;_syncedSnap=newSnap;
     populateFilters();build();if(curView==='dash')dashRender();if(curView==='closed')renderClosed();save();
-    setCloudStatus('✓ ดึงข้อมูลจาก Google Sheet สำเร็จ ('+rows.length+' แถว)');}
-  catch(e){setCloudStatus('❌ ผิดพลาด: '+e.message);}}
-let _ct,_lastSnap='';function cloudAutoQueue(){if(localStorage.getItem('cloudAuto')!=='1')return;if(!localStorage.getItem('sheetdbUrl'))return;
-  clearTimeout(_ct);_ct=setTimeout(()=>{const snap=JSON.stringify(toRows(''));if(snap===_lastSnap)return;_lastSnap=snap;cloudSave(true);},15000);}
+    if(silent){const sv=document.getElementById('saved');if(sv)sv.textContent='🔄 อัปเดตจาก Sheet '+new Date().toLocaleTimeString('th-TH');}
+    else setCloudStatus('✓ ดึงข้อมูลจาก Google Sheet สำเร็จ ('+rows.length+' แถว)');
+    return true;}
+  catch(e){if(!silent)setCloudStatus('❌ ผิดพลาด: '+e.message);return false;}
+  finally{_pulling=false;}}
+async function cloudLoad(){const url=getCloudUrl();if(!url)return;
+  if(!confirm('ดึงข้อมูลของปี '+YEAR+' จาก Google Sheet มาแทนที่ข้อมูลในเครื่อง?'))return;
+  cloudPull(false);}
+let _ct;function cloudAutoQueue(){if(localStorage.getItem('cloudAuto')!=='1')return;if(!localStorage.getItem('sheetdbUrl'))return;
+  clearTimeout(_ct);_ct=setTimeout(()=>{if(snapNow()===_syncedSnap)return;cloudSave(true);},15000);}
+function isEditingNow(){const a=document.activeElement;if(a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.isContentEditable))return true;
+  const m=document.querySelector('.modal-bg');if(m&&m.style.display==='flex')return true;return false;}
+function liveTick(){
+  if(typeof document.hidden!=='undefined'&&document.hidden)return;
+  if(_pushing||_pulling)return;
+  if(isEditingNow())return;
+  if(snapNow()!==_syncedSnap)return;            // ยังมีงานค้างส่ง — ข้ามรอบนี้ ให้ส่งขึ้นก่อน
+  if(localStorage.getItem('sheetdbUrl'))cloudPull(true);
+}
+function startLiveSync(){
+  // ดึงข้อมูลล่าสุดตอนเปิด แล้วตั้งรีเฟรชทุก 60 วิ
+  if(!localStorage.getItem('sheetdbUrl'))return;
+  setTimeout(()=>cloudPull(true).then(()=>{_syncedSnap=snapNow();}),1200);
+  setInterval(liveTick,60000);
+}
 function importJSON(ev){const f=ev.target.files[0];if(!f)return;const rd=new FileReader();
   rd.onload=()=>{try{const obj=JSON.parse(rd.result);
     if(!obj||typeof obj!=='object'||!Array.isArray(obj.rows))throw new Error('ไฟล์นี้ไม่ใช่ไฟล์สำรองของระบบ (ไม่พบรายการข้อมูล rows)');
@@ -1268,7 +1308,13 @@ function enterApp(){var l=document.getElementById("landing");if(!l||l.classList.
   lg.addEventListener('mousemove',function(e){var r=lg.getBoundingClientRect();var x=(e.clientX-r.left)/r.width-0.5,y=(e.clientY-r.top)/r.height-0.5;
     card.style.transform='rotateY('+(x*13).toFixed(2)+'deg) rotateX('+(-y*13).toFixed(2)+'deg) scale(1.01)';});
   lg.addEventListener('mouseleave',function(){card.style.transform='';});})();
+// ----- ฐานข้อมูลกลาง (ฝังไว้ให้ทุกคนต่อ Sheet เดียวกันอัตโนมัติ) -----
+const DEFAULT_SHEETDB_URL='https://sheetdb.io/api/v1/d587zbk3occo7';
+if(!localStorage.getItem('sheetdbUrl'))localStorage.setItem('sheetdbUrl',DEFAULT_SHEETDB_URL);
+if(localStorage.getItem('cloudAuto')===null)localStorage.setItem('cloudAuto','1');
 load();populateYears();build();save();
+_syncedSnap=snapNow();
+startLiveSync();
 
 </script>
 </body>
