@@ -36,6 +36,14 @@
   .btn:active{transform:translateY(0)}
   .btn.primary{background:linear-gradient(140deg,var(--brand-2),var(--brand));border-color:transparent;color:#fff;box-shadow:0 8px 18px -6px rgba(28,71,184,.5)}
   a.btn{text-decoration:none}
+  .syncwrap{display:inline-flex;align-items:center;gap:6px;font-size:11.5px;font-weight:600;color:var(--muted);white-space:nowrap}
+  .syncdot{width:9px;height:9px;border-radius:50%;background:#c4ccd2;flex:0 0 auto}
+  .syncdot.ok{background:#27ae60}.syncdot.err{background:#e0483d}
+  .syncdot.pull{background:#2f6bed;animation:syncpulse 1s infinite}
+  .syncdot.off{background:#c4ccd2}
+  @keyframes syncpulse{0%,100%{opacity:1}50%{opacity:.3}}
+  .synctxt{max-width:150px;overflow:hidden;text-overflow:ellipsis}
+  @media(max-width:760px){.synctxt{display:none}}
   .btn.dblink{background:#eafaf1;border-color:#bfe6cf;color:#1f7d54;font-weight:700}
   .btn.dblink:hover{background:#e2f6ea;border-color:#9fd9b6}
   .btn.primary:hover{filter:brightness(1.05)}
@@ -510,6 +518,8 @@
     </div>
     <select id="ypSelect" class="yearsel" onchange="selectYear(this.value)" title="เลือกปี (พ.ศ.)"></select>
     <button class="btn primary" onclick="save()">💾 บันทึก</button>
+    <span class="syncwrap" title="สถานะการซิงค์ข้อมูลกับ Google Sheet"><span class="syncdot" id="syncDot"></span><span class="synctxt" id="syncTxt">เชื่อมต่อ...</span></span>
+    <button class="btn" onclick="cloudRefreshNow()" title="ดึงข้อมูลล่าสุดจาก Sheet เดี๋ยวนี้">🔄 รีเฟรช</button>
     <button class="btn" onclick="openCloud()">☁ Google Sheet</button>
     <a class="btn dblink" href="https://docs.google.com/spreadsheets/d/1cymO2FW4h34Qt3N87RsP7boyyo3oR4CGh-9kTC1gECw/edit?gid=0#gid=0" target="_blank" rel="noopener" title="เปิดฐานข้อมูลอ้างอิงบน Google Sheet">📊 ฐานข้อมูล ↗</a>
     <div class="menu-wrap">
@@ -1140,36 +1150,39 @@ async function cloudSave(silent){const url=getCloudUrl(silent);if(!url)return;
     const prev=localStorage.getItem(syncIdKey());
     if(prev&&prev!==newId){await fetch(url+'/syncId/'+encodeURIComponent(prev),{method:'DELETE'}).catch(()=>{});}
     localStorage.setItem(syncIdKey(),newId);_syncedSnap=snap;
-    const tm=new Date().toLocaleTimeString('th-TH');
-    if(silent){const sv=document.getElementById('saved');if(sv)sv.textContent='☁ ซิงค์ขึ้น Sheet '+tm;}
-    else setCloudStatus('✓ บันทึกขึ้น Google Sheet แล้ว (ปี '+YEAR+') · '+tm);
-  }catch(e){if(!silent)setCloudStatus('❌ ส่งไม่สำเร็จ (ข้อมูลในเครื่องยังอยู่ครบ): '+e.message);}
+    const tm=new Date().toLocaleTimeString('th-TH');setSync('ok','ซิงค์ขึ้น Sheet แล้ว '+tm);
+    if(!silent)setCloudStatus('✓ บันทึกขึ้น Google Sheet แล้ว (ปี '+YEAR+') · '+tm);
+  }catch(e){setSync('err','ส่งไม่สำเร็จ: '+e.message);if(!silent)setCloudStatus('❌ ส่งไม่สำเร็จ (ข้อมูลในเครื่องยังอยู่ครบ): '+e.message);}
   finally{_pushing=false;}}
 async function cloudPull(silent){const url=getCloudUrl(silent);if(!url)return false;
   if(!silent)setCloudStatus('⏳ กำลังดึงข้อมูล...');_pulling=true;
   try{const r=await fetch(url);if(!r.ok)throw new Error('HTTP '+r.status);let all=await r.json();if(!Array.isArray(all))all=[];
     let rows=all.filter(x=>String(x.year||'')===String(YEAR));
     if(!rows.length)rows=all.filter(x=>!String(x.year||'').trim()); // เผื่อข้อมูลเก่าที่ยังไม่มีคอลัมน์ปี
-    if(!rows.length){if(!silent)setCloudStatus('⚠ ยังไม่มีข้อมูลของปี '+YEAR+' ใน Sheet (กด “บันทึกขึ้น Sheet” ก่อน)');return false;}
+    if(!rows.length){setSync('ok','Sheet ยังว่าง (ปี '+YEAR+')');if(!silent)setCloudStatus('⚠ ยังไม่มีข้อมูลของปี '+YEAR+' ใน Sheet (กด “บันทึกขึ้น Sheet” ก่อน)');return false;}
     const ids=rows.map(x=>String(x.syncId||'')).filter(Boolean);
     if(ids.length){const maxId=ids.sort().slice(-1)[0];rows=rows.filter(x=>String(x.syncId||'')===maxId);}
     const keepLog=(state&&Array.isArray(state.log))?state.log:[];
     const incoming=fromRows(rows);norm(incoming);incoming.log=keepLog;
     const newSnap=JSON.stringify((function(){const _s=state;state=incoming;const s=snapNow();state=_s;return JSON.parse(s);})());
     // ถ้าข้อมูลเหมือนเดิม ไม่ต้อง re-render (กันจอกระพริบ/เสียโฟกัส)
-    if(newSnap===_syncedSnap&&silent){_pulling=false;return false;}
+    if(newSnap===_syncedSnap&&silent){setSync('ok','ตรงกับ Sheet แล้ว '+new Date().toLocaleTimeString('th-TH'));_pulling=false;return false;}
     state=incoming;_syncedSnap=newSnap;
     populateFilters();build();if(curView==='dash')dashRender();if(curView==='closed')renderClosed();save();
-    if(silent){const sv=document.getElementById('saved');if(sv)sv.textContent='🔄 อัปเดตจาก Sheet '+new Date().toLocaleTimeString('th-TH');}
-    else setCloudStatus('✓ ดึงข้อมูลจาก Google Sheet สำเร็จ ('+rows.length+' แถว)');
+    setSync('ok','อัปเดตจาก Sheet '+new Date().toLocaleTimeString('th-TH'));
+    if(!silent)setCloudStatus('✓ ดึงข้อมูลจาก Google Sheet สำเร็จ ('+rows.length+' แถว)');
     return true;}
-  catch(e){if(!silent)setCloudStatus('❌ ผิดพลาด: '+e.message);return false;}
+  catch(e){setSync('err','ดึงไม่สำเร็จ: '+e.message);if(!silent)setCloudStatus('❌ ผิดพลาด: '+e.message);return false;}
   finally{_pulling=false;}}
 async function cloudLoad(){const url=getCloudUrl();if(!url)return;
   if(!confirm('ดึงข้อมูลของปี '+YEAR+' จาก Google Sheet มาแทนที่ข้อมูลในเครื่อง?'))return;
   cloudPull(false);}
-let _ct;function cloudAutoQueue(){if(localStorage.getItem('cloudAuto')!=='1')return;if(!localStorage.getItem('sheetdbUrl'))return;
-  clearTimeout(_ct);_ct=setTimeout(()=>{if(snapNow()===_syncedSnap)return;cloudSave(true);},15000);}
+let _ct;function cloudAutoQueue(){if(localStorage.getItem('cloudAuto')==='0')return;if(!localStorage.getItem('sheetdbUrl'))return;
+  clearTimeout(_ct);_ct=setTimeout(()=>{if(snapNow()===_syncedSnap)return;cloudSave(true);},6000);}
+function cloudRefreshNow(){setSync('pull','กำลังรีเฟรช...');cloudPull(false);}
+function setSync(kind,msg){const d=document.getElementById('syncDot');if(!d)return;
+  d.className='syncdot '+(kind||'');d.title=msg||'';
+  const t=document.getElementById('syncTxt');if(t)t.textContent=msg||'';}
 function isEditingNow(){const a=document.activeElement;if(a&&(a.tagName==='INPUT'||a.tagName==='TEXTAREA'||a.isContentEditable))return true;
   const m=document.querySelector('.modal-bg');if(m&&m.style.display==='flex')return true;return false;}
 function liveTick(){
@@ -1180,10 +1193,12 @@ function liveTick(){
   if(localStorage.getItem('sheetdbUrl'))cloudPull(true);
 }
 function startLiveSync(){
-  // ดึงข้อมูลล่าสุดตอนเปิด แล้วตั้งรีเฟรชทุก 60 วิ
-  if(!localStorage.getItem('sheetdbUrl'))return;
-  setTimeout(()=>cloudPull(true).then(()=>{_syncedSnap=snapNow();}),1200);
-  setInterval(liveTick,60000);
+  // ดึงข้อมูลล่าสุดตอนเปิด แล้วตั้งรีเฟรชทุก 30 วิ
+  if(!localStorage.getItem('sheetdbUrl')){setSync('off','ยังไม่ได้เชื่อม Sheet');return;}
+  setSync('pull','กำลังเชื่อม Google Sheet...');
+  setTimeout(()=>cloudPull(true).then(()=>{_syncedSnap=snapNow();}),1000);
+  setInterval(liveTick,30000);
+  window.addEventListener('focus',()=>{if(!_pushing&&!_pulling&&snapNow()===_syncedSnap)cloudPull(true);});
 }
 function importJSON(ev){const f=ev.target.files[0];if(!f)return;const rd=new FileReader();
   rd.onload=()=>{try{const obj=JSON.parse(rd.result);
